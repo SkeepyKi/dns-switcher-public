@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.BroadcastReceiver
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
@@ -93,6 +94,7 @@ class DnsQsTileService : TileService() {
         val isRunning = prefs.getBoolean(KEY_SERVICE_RUNNING, false)
 
         tile.state = if (isRunning) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.icon = Icon.createWithResource(this, R.drawable.ic_qs_dns)
         tile.label = "DNS Switch"
         tile.subtitle = if (isRunning) "Мониторинг ВКЛ" else "Выключено"
         tile.contentDescription = if (isRunning) "DNS мониторинг активен" else "DNS мониторинг выключен"

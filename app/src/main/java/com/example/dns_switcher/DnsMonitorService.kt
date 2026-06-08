@@ -1,5 +1,6 @@
 package com.example.dns_switcher
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -30,6 +31,8 @@ class DnsMonitorService : Service() {
         private const val CHANNEL_ID = "dns_monitor_channel"
         private const val NOTIFICATION_ID = 1001
         private const val POLL_INTERVAL_MS = 1500L
+        private const val WATCHDOG_REQUEST_CODE = 7777
+        private const val WATCHDOG_INTERVAL_MS = 30_000L // 30 секунд
 
         const val EXTRA_DNS_SERVER = "extra_dns_server"
         const val EXTRA_TARGET_PACKAGES = "extra_target_packages"
@@ -49,6 +52,7 @@ class DnsMonitorService : Service() {
     private lateinit var dnsController: DnsController
     private lateinit var usageStatsManager: UsageStatsManager
     private val handler = Handler(Looper.getMainLooper())
+    private var isTaskRemoved = false
     private var isRunning = false
 
     private var dnsServer: String = DEFAULT_DNS
@@ -117,6 +121,9 @@ class DnsMonitorService : Service() {
         val notification = buildNotification("Мониторинг активен")
         startForeground(NOTIFICATION_ID, notification)
 
+        // Сбрасываем флаг смахивания (для корректной работы onDestroy при ручной остановке)
+        isTaskRemoved = false
+
         // Запускаем цикл опроса
         isRunning = true
         isDnsEnabled = true
@@ -126,22 +133,29 @@ class DnsMonitorService : Service() {
         // Обновляем QS Tile
         DnsQsTileService.requestTileUpdate(this)
 
+        // Ставим watchdog-алярм на 2 минуты — если процесс убьют без onTaskRemoved,
+        // алярм перезапустит сервис. Каждый onStartCommand обновляет алярм.
+        scheduleWatchdog()
+
         Log.d(TAG, "Служба запущена. DNS: $dnsServer, Исключения: ${targetPackages.size} приложений")
 
         return START_STICKY
     }
 
     override fun onDestroy() {
-        isRunning = false
         handler.removeCallbacks(pollRunnable)
 
-        // Сбрасываем флаг и обновляем QS Tile
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        prefs.edit().putBoolean("service_running", false).apply()
-        DnsQsTileService.requestTileUpdate(this)
+        if (!isTaskRemoved) {
+            // Ручная остановка — сбрасываем всё и отменяем watchdog
+            isRunning = false
+            cancelWatchdog()
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            prefs.edit().putBoolean("service_running", false).apply()
+            DnsQsTileService.requestTileUpdate(this)
+            sendStatusBroadcast("")
+        }
 
-        sendStatusBroadcast("")
-        Log.d(TAG, "Служба остановлена")
+        Log.d(TAG, "Служба остановлена (taskRemoved=$isTaskRemoved)")
         super.onDestroy()
     }
 
@@ -153,13 +167,60 @@ class DnsMonitorService : Service() {
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        Log.d(TAG, "Приложение смахнуто — перезапуск службы")
+        isTaskRemoved = true
+        Log.d(TAG, "Приложение смахнуто — планируем перезапуск")
 
         val restartIntent = Intent(this, DnsMonitorService::class.java).apply {
             putExtra(EXTRA_DNS_SERVER, dnsServer)
             putStringArrayListExtra(EXTRA_TARGET_PACKAGES, ArrayList(targetPackages))
         }
-        androidx.core.content.ContextCompat.startForegroundService(this, restartIntent)
+
+        // Способ 1: прямой перезапуск (срабатывает при «закрыть все»)
+        try {
+            androidx.core.content.ContextCompat.startForegroundService(this, restartIntent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Прямой перезапуск не удался: ${e.message}")
+        }
+
+        // Способ 2: AlarmManager как бэкап (срабатывает при одиночном смахивании)
+        val pendingIntent = PendingIntent.getForegroundService(
+            this,
+            System.currentTimeMillis().toInt(),
+            restartIntent,
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarmManager.setAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            System.currentTimeMillis() + 1000,
+            pendingIntent
+        )
+    }
+
+    private fun getWatchdogPendingIntent(): PendingIntent {
+        val intent = Intent(this, DnsMonitorService::class.java)
+        return PendingIntent.getForegroundService(
+            this,
+            WATCHDOG_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun scheduleWatchdog() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarmManager.setAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            System.currentTimeMillis() + WATCHDOG_INTERVAL_MS,
+            getWatchdogPendingIntent()
+        )
+        Log.d(TAG, "Watchdog запланирован через ${WATCHDOG_INTERVAL_MS / 1000} сек")
+    }
+
+    private fun cancelWatchdog() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarmManager.cancel(getWatchdogPendingIntent())
+        Log.d(TAG, "Watchdog отменён")
     }
 
     /**
