@@ -42,23 +42,23 @@ class DnsMonitorService : Service() {
         const val EXTRA_DNS_STATE = "extra_dns_state"
         const val EXTRA_IS_RUNNING = "extra_is_running"
 
-        private const val PREFS_NAME = "dns_switcher_prefs"
-        private const val KEY_DNS_SERVER = "dns_server"
-        private const val KEY_TARGET_PACKAGES = "target_packages"
-        private const val DEFAULT_DNS = "dns.adguard.com"
-        val DEFAULT_PACKAGES = setOf("com.supercell.brawlstars")
+
     }
 
     private lateinit var dnsController: DnsController
     private lateinit var usageStatsManager: UsageStatsManager
-    private val handler = Handler(Looper.getMainLooper())
+    private lateinit var handlerThread: android.os.HandlerThread
+    private lateinit var handler: Handler
     private var isTaskRemoved = false
     private var isRunning = false
 
-    private var dnsServer: String = DEFAULT_DNS
-    private var targetPackages: Set<String> = DEFAULT_PACKAGES
+    private var dnsServer: String = Constants.DEFAULT_DNS
+    private var targetPackages: Set<String> = Constants.DEFAULT_PACKAGES
     private var lastForegroundApp: String = ""
     private var isDnsEnabled = true
+    
+    private var pendingDnsEnableTime = 0L
+    private val DNS_ENABLE_DELAY_MS = 4000L // 4 секунды задержка перед обратным включением DNS
 
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -69,6 +69,8 @@ class DnsMonitorService : Service() {
                 lastForegroundApp = currentApp
 
                 if (currentApp in targetPackages) {
+                    pendingDnsEnableTime = 0L // Сбрасываем таймер
+                    
                     // Целевая игра на переднем плане — отключаем DNS
                     if (isDnsEnabled) {
                         dnsController.disableDns()
@@ -77,12 +79,19 @@ class DnsMonitorService : Service() {
                         updateNotification("DNS ВЫКЛ — $currentApp")
                     }
                 } else {
-                    // Другое приложение — включаем DNS
+                    // Другое приложение — включаем DNS плавно (с задержкой)
                     if (!isDnsEnabled) {
-                        dnsController.enableDns(dnsServer)
-                        isDnsEnabled = true
-                        Log.d(TAG, "DNS включён ($dnsServer) — $currentApp")
-                        updateNotification("DNS ВКЛ ($dnsServer)")
+                        if (pendingDnsEnableTime == 0L) {
+                            pendingDnsEnableTime = System.currentTimeMillis() + DNS_ENABLE_DELAY_MS
+                        } else if (System.currentTimeMillis() >= pendingDnsEnableTime) {
+                            dnsController.enableDns(dnsServer)
+                            isDnsEnabled = true
+                            Log.d(TAG, "DNS включён ($dnsServer) — $currentApp")
+                            updateNotification("DNS ВКЛ ($dnsServer)")
+                            pendingDnsEnableTime = 0L
+                        }
+                    } else {
+                        pendingDnsEnableTime = 0L
                     }
                 }
 
@@ -99,22 +108,26 @@ class DnsMonitorService : Service() {
         dnsController = DnsController(this)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         createNotificationChannel()
+        
+        handlerThread = android.os.HandlerThread("DnsMonitorThread")
+        handlerThread.start()
+        handler = Handler(handlerThread.looper)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Считываем параметры из Intent или SharedPreferences
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val prefs = getSharedPreferences(Constants.PREFS_NAME, MODE_PRIVATE)
 
         dnsServer = intent?.getStringExtra(EXTRA_DNS_SERVER)
-            ?: prefs.getString(KEY_DNS_SERVER, DEFAULT_DNS)!!
+            ?: prefs.getString(Constants.KEY_DNS_SERVER, Constants.DEFAULT_DNS)!!
         targetPackages = intent?.getStringArrayListExtra(EXTRA_TARGET_PACKAGES)?.toSet()
-            ?: prefs.getStringSet(KEY_TARGET_PACKAGES, DEFAULT_PACKAGES)!!
+            ?: prefs.getStringSet(Constants.KEY_TARGET_PACKAGES, Constants.DEFAULT_PACKAGES)!!
 
         // Сохраняем в SharedPreferences для будущего использования (BootReceiver + QS Tile)
         prefs.edit()
-            .putString(KEY_DNS_SERVER, dnsServer)
-            .putStringSet(KEY_TARGET_PACKAGES, targetPackages)
-            .putBoolean("service_running", true)
+            .putString(Constants.KEY_DNS_SERVER, dnsServer)
+            .putStringSet(Constants.KEY_TARGET_PACKAGES, targetPackages)
+            .putBoolean(Constants.KEY_SERVICE_RUNNING, true)
             .apply()
 
         // Запускаем Foreground с минимальным уведомлением
@@ -144,13 +157,14 @@ class DnsMonitorService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacks(pollRunnable)
+        handlerThread.quitSafely()
 
         if (!isTaskRemoved) {
             // Ручная остановка — сбрасываем всё и отменяем watchdog
             isRunning = false
             cancelWatchdog()
-            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            prefs.edit().putBoolean("service_running", false).apply()
+            val prefs = getSharedPreferences(Constants.PREFS_NAME, MODE_PRIVATE)
+            prefs.edit().putBoolean(Constants.KEY_SERVICE_RUNNING, false).apply()
             DnsQsTileService.requestTileUpdate(this)
             sendStatusBroadcast("")
         }

@@ -18,11 +18,7 @@ class DnsQsTileService : TileService() {
 
     companion object {
         private const val TAG = "DnsQsTileService"
-        private const val PREFS_NAME = "dns_switcher_prefs"
-        private const val KEY_DNS_SERVER = "dns_server"
-        private const val KEY_TARGET_PACKAGES = "target_packages"
-        private const val KEY_SERVICE_RUNNING = "service_running"
-        private const val DEFAULT_DNS = "dns.adguard.com"
+
 
         fun requestTileUpdate(context: Context) {
             requestListeningState(
@@ -41,8 +37,8 @@ class DnsQsTileService : TileService() {
         statusReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val isRunning = intent.getBooleanExtra(DnsMonitorService.EXTRA_IS_RUNNING, false)
-                val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                prefs.edit().putBoolean(KEY_SERVICE_RUNNING, isRunning).apply()
+                val prefs = getSharedPreferences(Constants.PREFS_NAME, MODE_PRIVATE)
+                prefs.edit().putBoolean(Constants.KEY_SERVICE_RUNNING, isRunning).apply()
                 updateTileState()
             }
         }
@@ -65,24 +61,24 @@ class DnsQsTileService : TileService() {
     override fun onClick() {
         super.onClick()
 
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val isRunning = prefs.getBoolean(KEY_SERVICE_RUNNING, false)
+        val prefs = getSharedPreferences(Constants.PREFS_NAME, MODE_PRIVATE)
+        val isRunning = prefs.getBoolean(Constants.KEY_SERVICE_RUNNING, false)
 
         if (isRunning) {
             Log.d(TAG, "Tile: остановка службы")
             stopService(Intent(this, DnsMonitorService::class.java))
-            prefs.edit().putBoolean(KEY_SERVICE_RUNNING, false).apply()
+            prefs.edit().putBoolean(Constants.KEY_SERVICE_RUNNING, false).apply()
         } else {
             Log.d(TAG, "Tile: запуск службы")
-            val dnsServer = prefs.getString(KEY_DNS_SERVER, DEFAULT_DNS)!!
-            val targetPackages = prefs.getStringSet(KEY_TARGET_PACKAGES, DnsMonitorService.DEFAULT_PACKAGES)!!
+            val dnsServer = prefs.getString(Constants.KEY_DNS_SERVER, Constants.DEFAULT_DNS)!!
+            val targetPackages = prefs.getStringSet(Constants.KEY_TARGET_PACKAGES, Constants.DEFAULT_PACKAGES)!!
 
             val serviceIntent = Intent(this, DnsMonitorService::class.java).apply {
                 putExtra(DnsMonitorService.EXTRA_DNS_SERVER, dnsServer)
                 putStringArrayListExtra(DnsMonitorService.EXTRA_TARGET_PACKAGES, ArrayList(targetPackages))
             }
             androidx.core.content.ContextCompat.startForegroundService(this, serviceIntent)
-            prefs.edit().putBoolean(KEY_SERVICE_RUNNING, true).apply()
+            prefs.edit().putBoolean(Constants.KEY_SERVICE_RUNNING, true).apply()
         }
 
         updateTileState()
@@ -90,8 +86,8 @@ class DnsQsTileService : TileService() {
 
     private fun updateTileState() {
         val tile = qsTile ?: return
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val isRunning = prefs.getBoolean(KEY_SERVICE_RUNNING, false)
+        val prefs = getSharedPreferences(Constants.PREFS_NAME, MODE_PRIVATE)
+        val isRunning = prefs.getBoolean(Constants.KEY_SERVICE_RUNNING, false)
 
         tile.state = if (isRunning) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.icon = Icon.createWithResource(this, R.drawable.ic_qs_dns)

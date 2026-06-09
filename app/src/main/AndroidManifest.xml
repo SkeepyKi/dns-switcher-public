@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Разрешение на доступ в интернет (нужно для пинга DNS) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Разрешение на изменение защищённых системных настроек (Private DNS) -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
